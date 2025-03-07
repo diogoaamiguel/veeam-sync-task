@@ -18,6 +18,20 @@ def calculate_md5(file_path, chunk_size=4096):
     return md5.hexdigest()
     
 
+def sync_file(source, replica):
+
+    #If replica does not exist, make a copy
+    if not os.path.exists(replica):
+        shutil.copy2(source, replica)
+        logging.info(f"Copied new file: {source} -> {replica}")
+        return
+
+    if calculate_md5(source) != calculate_md5(replica):
+        shutil.copy2(source, replica)
+        logging.info(f"Update file: {source} -> {replica}")
+    
+        
+
 def sync_directories(source, replica):
 
     # Verify and ensure that replica file exists
@@ -91,8 +105,13 @@ def main():
     #Run synchronization periodically
     while True:
         try:
+            if os.path.isdir(args.source):
+                sync_directories(args.source, args.replica)
+            elif os.path.isfile(args.source):
+                sync_file(args.source, args.replica)
+            else:
+                logging.error(f"Source path does not exist: {args.source}")
 
-            sync_directories(args.source, args.replica)
             logging.info("Synchronization completed")
             time.sleep(args.interval)
 
