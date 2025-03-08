@@ -5,104 +5,118 @@ import argparse
 import hashlib
 import time
 
-
 def calculate_md5(file_path, chunk_size=4096):
-    '''Calculate the MD5 hash of a file using the built-in hashlib library'''
-
+    '''Calculate the MD5 hash of a file'''
     md5 = hashlib.md5()
-
-    with open(file_path, 'rb') as f:
-        while chunk := f.read(chunk_size):
-            md5.update(chunk)
-
-    return md5.hexdigest()
-    
+    try:
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(chunk_size):
+                md5.update(chunk)
+        return md5.hexdigest()
+    except Exception as e:
+        logging.error(f"Error computing MD5 for {file_path}: {e}")
+        return None
 
 def sync_file(source, replica):
-
-    #If replica does not exist, make a copy
-    if not os.path.exists(replica):
-        shutil.copy2(source, replica)
-        logging.info(f"Copied new file: {source} -> {replica}")
+    if not os.path.exists(source):
+        logging.error(f"Source file does not exist: {source}")
         return
-
-    if calculate_md5(source) != calculate_md5(replica):
-        shutil.copy2(source, replica)
-        logging.info(f"Update file: {source} -> {replica}")
     
-        
+    # If replica does not exist, make a copy
+    if not os.path.exists(replica):
+        if os.path.islink(source):
+            os.symlink(os.readlink(source), replica)
+            logging.info(f"Created symlink: {source} -> {replica}")
+        else:
+            shutil.copy2(source, replica)
+            logging.info(f"Copied new file: {source} -> {replica}")
+        return
+    
+    # Calculate MD5 hashes
+    source_md5 = calculate_md5(source)
+    replica_md5 = calculate_md5(replica)
+    
+    if source_md5 is None or replica_md5 is None:
+        logging.error(f"Skipping {source} due to MD5 calculation error")
+        return
+    
+    if source_md5 != replica_md5:
+        shutil.copy2(source, replica)
+        logging.info(f"Updated file: {source} -> {replica}")
 
 def sync_directories(source, replica):
-
-    # Verify and ensure that replica file exists
-
+    """Recursively synchronize the source directory with the replica."""
     if not os.path.exists(replica):
-        os.makedirs(replica)
-        logging.info(f"Created directory: {replica}")
-
-    #Sync files and subdirectories from source to replica
-
-    for item in os.listdir(source):
+        try:
+            os.makedirs(replica)
+            logging.info(f"Created directory: {replica}")
+        except Exception as e:
+            logging.error(f"Error creating directory {replica}: {e}")
+            return
+    
+    # Get directory listing safely
+    try:
+        items = os.listdir(source)
+    except Exception as e:
+        logging.error(f"Could not list directory {source}: {e}")
+        return
+    
+    # Sync files and subdirectories
+    for item in items:
+        if item.startswith('.'):  # Skip hidden files
+            continue
+        
         src_path = os.path.join(source, item)
         rep_path = os.path.join(replica, item)
-
-        if os.path.isdir(src_path): #Recursively synchroniza subdirectories
-
-            sync_directories(src_path, rep_path)
-
-        else: #Handles files: copy if missing or update if different
-
-            if not os.path.exists(rep_path): #If path to replica does not exist copy from source
-
-                shutil.copy2(src_path, rep_path)
-                logging.info(f"Copied new file: {src_path} -> {rep_path}")
-
-            else: # If it exists Check for differences using MD5
-
-                if calculate_md5(src_path) != calculate_md5(rep_path):
-                    shutil.copy2(src_path, rep_path)
-                    logging.info(f"Updated file: {src_path} -> {rep_path}")
-
-    #Remove extra files and directories from replica
-
-    for item in os.listdir(replica):
-        rep_path = os.path.join(replica,item)
-        src_path = os.path.join(source,item)
-
-        if not os.path.exists(src_path):
-            if os.path.isfile(rep_path):
-                os.remove(rep_path)
-                logging.info(f"Removed file: {rep_path}")
-
-            elif os.path.isdir(rep_path):
-                shutil.rmtree(rep_path)
-                logging.info(f"Removed directory: {rep_path}")
         
+        if os.path.isdir(src_path):
+            sync_directories(src_path, rep_path)
+        else:
+            sync_file(src_path, rep_path)
+    
+    # Remove extra files and directories from the replica
+    try:
+        for item in os.listdir(replica):
+            rep_path = os.path.join(replica, item)
+            src_path = os.path.join(source, item)
+            
+            if not os.path.exists(src_path):
+                try:
+                    if os.path.isfile(rep_path) or os.path.islink(rep_path):
+                        os.remove(rep_path)
+                        logging.info(f"Removed file: {rep_path}")
+                    elif os.path.isdir(rep_path):
+                        shutil.rmtree(rep_path)
+                        logging.info(f"Removed directory: {rep_path}")
+                except Exception as e:
+                    logging.error(f"Error removing {rep_path}: {e}")
+    except Exception as e:
+        logging.error(f"Error synchronizing directory {source}: {e}")
 
 def main():
-    #Parsing command-line arguments
+    # Parsing command-line arguments
     parser = argparse.ArgumentParser(description="One-way Folder Synchronization Tool")
     parser.add_argument("source", help="Path to source folder")
     parser.add_argument("replica", help="Path to replica folder")
-    parser.add_argument("interval", type = int, help="Synchronization interval in seconds")
+    parser.add_argument("interval", type=int, help="Synchronization interval in seconds")
     parser.add_argument("logfile", help="Path to log file")
     args = parser.parse_args()
-
-
-
-    #Set up logging to both a file and the console
-
+    
+    # Set up logging
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.FileHandler(args.logfile), logging.StreamHandler()])
-
-
+        handlers=[logging.FileHandler(args.logfile), logging.StreamHandler()]
+    )
+    
     logging.info("Starting folder synchronization")
     logging.info(f"Source Folder: {args.source}")
     logging.info(f"Replica Folder: {args.replica}")
     logging.info(f"Interval: {args.interval} seconds")
     
-    #Run synchronization periodically
+    backoff_interval = args.interval
+    max_backoff = 300  # 5 minutes
+    
+    # Run synchronization periodically
     while True:
         try:
             if os.path.isdir(args.source):
@@ -111,16 +125,20 @@ def main():
                 sync_file(args.source, args.replica)
             else:
                 logging.error(f"Source path does not exist: {args.source}")
-
+                break
+                
             logging.info("Synchronization completed")
             time.sleep(args.interval)
-
+            backoff_interval = args.interval  # Reset backoff interval after successful sync
+        
         except KeyboardInterrupt:
             logging.info("Synchronization interrupted by user. Exiting...")
             break
-
+        
         except Exception as e:
             logging.error(f"Error during synchronization: {e}")
-            time.sleep(args.interval)
+            time.sleep(backoff_interval)
+            backoff_interval = min(backoff_interval * 2, max_backoff)  # Corrected backoff logic
+
 if __name__ == '__main__':
-     main()
+    main()
