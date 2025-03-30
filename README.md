@@ -1,5 +1,5 @@
 # veeam-sync-task
-Description
+Description:
 This project implements a one-way folder synchronization tool that keeps a replica folder in sync with a source folder. 
 The program ensures that the contents of the replica folder match the source folder by performing periodic synchronization, 
 which includes copying new or updated files and removing extra files or directories from the replica.
